@@ -1,0 +1,38 @@
+# Add to configuration.yaml, then restart Home Assistant (or reload pyscript).
+# Copy pyscript/apps/solis_ev_follow.py to <config>/pyscript/apps/solis_ev_follow.py
+#
+# IMPORTANT: disable the old automation that calls pyscript.solis_smart_charging,
+# otherwise it will overwrite the charge slots this app manages.
+
+pyscript:
+  hass_is_global: true
+  allow_all_imports: true
+  apps:
+    solis_ev_follow:
+      # --- SolisCloud credentials (same secrets as the old script) ---
+      key_id: !secret solis_key_id
+      secret: !secret solis_secret
+      username: !secret solis_username
+      password: !secret solis_password
+      plantId: !secret solis_plant_id
+      # inverter_sn: !secret solis_inverter_sn   # only needed with multiple inverters
+
+      # --- Entities ---
+      # Octopus sensor, set to "started dispatches only" in the integration options
+      dispatch_sensor: binary_sensor.octopus_energy_XXXXXXXX_intelligent_dispatching
+      charger_switch: switch.hypervolt_charging
+      charger_current: sensor.hypervolt_charger_current
+
+      # --- Behaviour (defaults shown) ---
+      min_current_amps: 3        # Hypervolt must draw at least this to count as charging
+      debounce_seconds: 60       # charging must persist this long before the battery starts
+      extend_lead_minutes: 3     # extend the slot this many minutes before each :00/:30
+      ev_slot: 2                 # Solis charge slot driven by this app
+      manage_core_slot: true     # write core_window into slot 1
+      core_window: "23:30-05:30"
+      clear_other_slots: true    # clear slots 3-6 on startup (removes old dispatch windows)
+      inverter_timezone: Europe/London
+      sync_inverter_time: true   # sync inverter clock at most once per 24h
+
+      # Start with this on: logs what it *would* write without touching the inverter.
+      diagnostics_only: true
