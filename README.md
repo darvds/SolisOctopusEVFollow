@@ -97,7 +97,11 @@ Start with `diagnostics_only: true`. The app then logs what it *would* write wit
 
 ## Credits
 
-The SolisCloud API signing and control-write code is adapted from an earlier Octopus-dispatch charging script. The 6-slot CIDs come from [hultenvp/solis-sensor](https://github.com/hultenvp/solis-sensor).
+- [Moondevil-ha/solis-smart-charging](https://github.com/Moondevil-ha/solis-smart-charging) (MIT): the SolisCloud API signing, login, inverter selection, time sync and control-write code is adapted from this project, which schedules battery charging from Octopus *planned* dispatches.
+- [stevegal/solis_control](https://github.com/stevegal/solis_control) (MIT): the original SolisCloud API logic used by the project above.
+- [hultenvp/solis-sensor](https://github.com/hultenvp/solis-sensor): the 6-slot charge time CID mapping.
+
+Not affiliated with Solis, Octopus Energy, Hypervolt or Home Assistant.
 
 ## License
 
