@@ -98,3 +98,7 @@ Start with `diagnostics_only: true`. The app then logs what it *would* write wit
 ## Credits
 
 The SolisCloud API signing and control-write code is adapted from an earlier Octopus-dispatch charging script. The 6-slot CIDs come from [hultenvp/solis-sensor](https://github.com/hultenvp/solis-sensor).
+
+## License
+
+[MIT](LICENSE)
