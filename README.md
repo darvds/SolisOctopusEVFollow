@@ -95,6 +95,23 @@ Start with `diagnostics_only: true`. The app then logs what it *would* write wit
 - **Slots are at the wrong times.** Check the inverter clock and `inverter_timezone`.
 - **Before sharing logs**, remove inverter serial numbers and your Octopus account ID.
 
+## Development
+
+The tests use only the Python standard library (3.9+), with no Home Assistant or pyscript install needed:
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+`tests/harness.py` loads the app with fake versions of pyscript's built-in globals (`hass`, `state`, `task`, the trigger decorators), a frozen clock, instant sleeps and a fake SolisCloud API. That lets the tests drive the app through a full charging session and check exactly which charge slots it would write. The tests cover:
+
+- **Slot logic:** rolling half-hour windows, extending at `:27`/`:57`, finishing the half-hour, clearing, core-window hand-over, midnight
+- **Charge detection:** dispatch plus current threshold, ignoring preheating and blips, unavailable sensors
+- **Triggers:** debounce, startup initialisation, cron timing, services
+- **SolisCloud:** request signing, CIDs per slot, retries, inverter selection, daily time sync, diagnostics mode
+
+CI runs the suite on every push (`.github/workflows/tests.yml`).
+
 ## Credits
 
 - [Moondevil-ha/solis-smart-charging](https://github.com/Moondevil-ha/solis-smart-charging) (MIT): the SolisCloud API signing, login, inverter selection, time sync and control-write code is adapted from this project, which schedules battery charging from Octopus *planned* dispatches.
