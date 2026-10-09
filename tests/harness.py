@@ -86,6 +86,12 @@ class _AppConfigMissing:
 # -----------------------------
 OK_CONTROL = {"code": "0", "data": [{"code": "0"}]}
 
+# Duplicated from the app on purpose, so a wrong CID in the app fails the tests.
+CHARGE_TIME_CIDS = ["5946", "5949", "5952", "5955", "5958", "5961"]
+CHARGE_SWITCH_CIDS = ["5916", "5917", "5918", "5919", "5920", "5921"]
+DISCHARGE_SWITCH_CIDS = ["5922", "5923", "5924", "5925", "5926", "5927"]
+SLOT_SWITCH_CIDS = CHARGE_SWITCH_CIDS + DISCHARGE_SWITCH_CIDS
+
 
 def storage_inverter(inv_id="111", sn="SN111", name="Solis"):
     return {"id": inv_id, "sn": sn, "name": name, "productModel": "2"}
@@ -111,6 +117,8 @@ class FakeSolisCloud:
         self.calls = []
         self.records = records if records is not None else [storage_inverter()]
         self.queued = {}
+        # Inverter-side values: the 12 slot switches start off.
+        self.values = {cid: "0" for cid in SLOT_SWITCH_CIDS}
 
     async def post(self, url, data=None, headers=None):
         path = url.split(":13333", 1)[1]
@@ -122,19 +130,37 @@ class FakeSolisCloud:
             return FakeResponse(200, {"csrfToken": "tok-123"})
         if path == "/v1/api/inverterList":
             return FakeResponse(200, {"data": {"page": {"records": self.records}}})
-        if path in ("/v2/api/control", "/v2/api/atRead"):
+        if path == "/v2/api/control":
+            self.values[str(body["cid"])] = str(body["value"])
             return FakeResponse(200, OK_CONTROL)
+        if path == "/v2/api/atRead":
+            return FakeResponse(200, {"code": "0", "data": {"msg": self.values.get(str(body["cid"]), "")}})
+        if path == "/v2/api/atReadBatch":
+            items = [{"cid": int(cid), "msg": self.values.get(cid, "")} for cid in body["cids"].split(",")]
+            return FakeResponse(200, {"code": "0", "data": [items]})
         return FakeResponse(404, {})
 
     def paths(self):
         return [c["path"] for c in self.calls]
 
     def control_writes(self):
-        """(cid, value) for every control write, excluding the time sync."""
+        """(cid, value) for every control write in order, excluding the time sync."""
         out = []
         for c in self.calls:
             if c["path"] == "/v2/api/control" and c["body"].get("cid") != "56":
                 out.append((c["body"]["cid"], c["body"]["value"]))
+        return out
+
+    def time_writes(self):
+        """(cid, value) for charge slot time writes only."""
+        return [w for w in self.control_writes() if w[0] in CHARGE_TIME_CIDS]
+
+    def switch_writes(self):
+        """(cid, value, yuanzhi) for slot switch writes."""
+        out = []
+        for c in self.calls:
+            if c["path"] == "/v2/api/control" and c["body"]["cid"] in SLOT_SWITCH_CIDS:
+                out.append((c["body"]["cid"], c["body"]["value"], c["body"].get("yuanzhi")))
         return out
 
     def time_syncs(self):

@@ -17,6 +17,8 @@ How it works
       until the end of the current half-hour (Octopus bills the whole
       half-hour at the cheap rate) and then stops on its own.
     * Once the slot has expired, it is reset to 00:00-00:00.
+- Slot enable switches are kept in step: a slot is switched on whenever a
+  real window is written to it, and switched off when it is cleared.
 - Fail-safe: if HA / pyscript / SolisCloud dies, the battery charges for at
   most the remainder of the current half-hour.
 
@@ -38,7 +40,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 log = logging.getLogger("pyscript.solis_ev_follow")
 log.setLevel(logging.DEBUG)
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # -----------------------------
 # SolisCloud endpoints / constants
@@ -48,10 +50,18 @@ VERB = "POST"
 LOGIN_URL = "/v2/api/login"
 CONTROL_URL = "/v2/api/control"
 AT_READ_URL = "/v2/api/atRead"
+AT_READ_BATCH_URL = "/v2/api/atReadBatch"
 INVERTER_LIST_URL = "/v1/api/inverterList"
 
 # 6-slot firmware (HMI >= 4B00) charge time CIDs, slot 1..6
 CHARGE_TIME_CIDS = ["5946", "5949", "5952", "5955", "5958", "5961"]
+
+# Per-slot on/off switches ("1"/"0"). Writes must include "yuanzhi": a bitmask
+# of all 12 switch states before the change, bit = index in SLOT_SWITCH_CIDS
+# (charge slots 1-6 -> bits 0-5, discharge slots 1-6 -> bits 6-11).
+CHARGE_SWITCH_CIDS = ["5916", "5917", "5918", "5919", "5920", "5921"]
+DISCHARGE_SWITCH_CIDS = ["5922", "5923", "5924", "5925", "5926", "5927"]
+SLOT_SWITCH_CIDS = CHARGE_SWITCH_CIDS + DISCHARGE_SWITCH_CIDS
 EMPTY_SLOT = "00:00-00:00"
 
 STATUS_SENSOR = "sensor.solis_ev_charge_slot"
@@ -84,6 +94,7 @@ EV_SLOT = int(CFG.get("ev_slot", 2))
 MANAGE_CORE_SLOT = _cfg_bool("manage_core_slot", True)
 CORE_WINDOW = str(CFG.get("core_window", "23:30-05:30"))
 CLEAR_OTHER_SLOTS = _cfg_bool("clear_other_slots", True)
+MANAGE_SLOT_SWITCHES = _cfg_bool("manage_slot_switches", True)
 
 INVERTER_TIMEZONE = str(CFG.get("inverter_timezone", hass.config.time_zone or "UTC"))
 SYNC_INVERTER_TIME = _cfg_bool("sync_inverter_time", True)
@@ -231,6 +242,7 @@ async def get_inverter(session):
 
 
 async def get_control_value(session, token, inverter_sn, cid):
+    """Read one CID. Returns its value as a string, or None."""
     for attempt in range(1, CONTROL_RETRIES + 1):
         r = await solis_post(session, AT_READ_URL,
                              {"inverterSn": str(inverter_sn), "cid": str(cid)}, token=token)
@@ -239,21 +251,24 @@ async def get_control_value(session, token, inverter_sn, cid):
             continue
         try:
             data = await resp_json(r)
-            payload = data.get("data") or []
-            if str(data.get("code")) == "0" and payload and str(payload[0].get("code")) == "0":
-                return payload[0]
+            payload = data.get("data")
+            if isinstance(payload, list) and payload:
+                payload = payload[0]
+            if str(data.get("code")) == "0" and isinstance(payload, dict) and "msg" in payload:
+                return str(payload["msg"])
         except Exception as e:
             log.warning("AT_READ cid=%s attempt %s parse error: %s", cid, attempt, e)
         await asyncio.sleep(0.2)
     return None
 
 
-async def write_control(session, token, inverter_sn, cid, value):
+async def write_control(session, token, inverter_sn, cid, value, old_value=None):
+    body = {"inverterSn": str(inverter_sn), "cid": str(cid), "value": str(value)}
+    if old_value is not None:
+        body["yuanzhi"] = str(old_value)
     last_text = None
     for attempt in range(1, CONTROL_RETRIES + 1):
-        r = await solis_post(session, CONTROL_URL,
-                             {"inverterSn": str(inverter_sn), "cid": str(cid), "value": str(value)},
-                             token=token)
+        r = await solis_post(session, CONTROL_URL, body, token=token)
         try:
             last_text = await r.text()
         except Exception:
@@ -270,7 +285,10 @@ async def write_control(session, token, inverter_sn, cid, value):
                 if VERIFY_READBACK:
                     await asyncio.sleep(CONTROL_DELAY)
                     rb = await get_control_value(session, token, inverter_sn, cid)
-                    log.debug("Readback cid=%s: %s", cid, rb)
+                    if rb is not None and rb != str(value):
+                        log.warning("Readback cid=%s: wrote '%s' but read '%s'", cid, value, rb)
+                    else:
+                        log.debug("Readback cid=%s: %s", cid, rb)
                 return True
         except Exception as e:
             log.warning("CONTROL cid=%s attempt %s/%s parse error: %s", cid, attempt, CONTROL_RETRIES, e)
@@ -278,6 +296,62 @@ async def write_control(session, token, inverter_sn, cid, value):
 
     log.error("CONTROL cid=%s failed after %s attempts. Last response: %s", cid, CONTROL_RETRIES, last_text)
     return False
+
+
+async def read_slot_switches(session, token, inverter_sn):
+    """Return {cid: "0"/"1"} for the 12 slot switches; unreadable ones are left out."""
+    states = {}
+    try:
+        r = await solis_post(session, AT_READ_BATCH_URL,
+                             {"inverterSn": str(inverter_sn), "cids": ",".join(SLOT_SWITCH_CIDS)},
+                             token=token)
+        if r.status == HTTPStatus.OK:
+            data = await resp_json(r)
+            if str(data.get("code")) == "0":
+                for outer in data.get("data") or []:
+                    items = outer if isinstance(outer, list) else [outer]
+                    for item in items:
+                        if isinstance(item, dict) and "cid" in item and "msg" in item:
+                            states[str(item["cid"])] = str(item["msg"])
+        else:
+            log.warning("atReadBatch for slot switches failed http=%s", r.status)
+    except Exception as e:
+        log.warning("atReadBatch for slot switches failed: %s", e)
+
+    for cid in SLOT_SWITCH_CIDS:
+        if cid not in states:
+            value = await get_control_value(session, token, inverter_sn, cid)
+            if value is not None:
+                states[cid] = value
+    log.debug("Slot switch states: %s", states)
+    return states
+
+
+def slot_switch_mask(states):
+    """The "yuanzhi" bitmask for the current switch states, or None if any is unknown."""
+    mask = 0
+    for bit, cid in enumerate(SLOT_SWITCH_CIDS):
+        if cid not in states:
+            return None
+        if states[cid] == "1":
+            mask |= 1 << bit
+    return str(mask)
+
+
+async def set_charge_slot_switch(session, token, inverter_sn, states, slot_num, enabled):
+    """Switch a charge slot on/off if it isn't already. Updates `states` on success."""
+    cid = CHARGE_SWITCH_CIDS[slot_num - 1]
+    want = "1" if enabled else "0"
+    if states.get(cid) == want:
+        return True
+    old_value = slot_switch_mask(states)
+    if old_value is None:
+        log.warning("Slot switch states unknown; writing CID %s without yuanzhi", cid)
+    log.info("%s charge slot %s (CID %s)", "Enabling" if enabled else "Disabling", slot_num, cid)
+    ok = await write_control(session, token, inverter_sn, cid, want, old_value=old_value)
+    if ok:
+        states[cid] = want
+    return ok
 
 
 async def sync_inverter_time(session, token, inverter_id):
@@ -319,13 +393,30 @@ async def solis_write_slots(slot_values):
         if last is None or datetime.now(timezone.utc) - last > timedelta(hours=24):
             await sync_inverter_time(session, token, inverter_id)
 
+    switches = None
+    if MANAGE_SLOT_SWITCHES:
+        switches = await read_slot_switches(session, token, inverter_sn)
+
     ok = True
     for slot_num in sorted(slot_values.keys()):
         value = slot_values[slot_num]
+        enable = value != EMPTY_SLOT
+
+        # Clearing: switch off first so the slot is never enabled as 00:00-00:00.
+        if switches is not None and not enable:
+            if not await set_charge_slot_switch(session, token, inverter_sn, switches, slot_num, False):
+                ok = False
+
         cid = CHARGE_TIME_CIDS[slot_num - 1]
         log.info("Writing charge slot %s (CID %s) = %s", slot_num, cid, value)
-        if not await write_control(session, token, inverter_sn, cid, value):
+        time_ok = await write_control(session, token, inverter_sn, cid, value)
+        if not time_ok:
             ok = False
+
+        # Real window: switch on only once the new time is in place.
+        if switches is not None and enable and time_ok:
+            if not await set_charge_slot_switch(session, token, inverter_sn, switches, slot_num, True):
+                ok = False
         await asyncio.sleep(INTER_WRITE_DELAY)
     return ok
 

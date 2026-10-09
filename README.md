@@ -16,6 +16,7 @@ This app waits for the car to draw power during a dispatch that has really **sta
   - A few minutes before each `:00`/`:30`, if the car is still charging, the end moves out by another 30 minutes.
   - When the car stops, the slot isn't extended. The battery finishes the current half-hour, which Octopus bills at the cheap rate as a whole, and then stops.
   - Once expired, the slot is reset to `00:00-00:00`.
+- **Slot enable switches** (6-slot firmware) are kept in step with the times. A slot is switched **on** after a real window is written to it, and switched **off** before it's cleared to `00:00-00:00`. Discharge slots are never touched.
 - A check every 5 minutes clears expired slots and catches any missed state changes.
 - **Fail-safe:** if Home Assistant, pyscript or SolisCloud goes down, the battery charges for at most the remainder of the current half-hour.
 
@@ -67,7 +68,8 @@ Start with `diagnostics_only: true`. The app then logs what it *would* write wit
 | `ev_slot` | `2` | Solis charge slot driven by this app (2–6) |
 | `manage_core_slot` | `true` | Write `core_window` into slot 1 |
 | `core_window` | `23:30-05:30` | Octopus core off-peak window |
-| `clear_other_slots` | `true` | Clear unused slots on startup |
+| `clear_other_slots` | `true` | Clear (and switch off) unused slots on startup |
+| `manage_slot_switches` | `true` | Switch charge slots on/off to match their times (CIDs 5916–5921) |
 | `inverter_timezone` | HA time zone | Time zone the inverter clock and slots use |
 | `sync_inverter_time` | `true` | Sync the inverter clock (at most once per 24h) |
 | `diagnostics_only` | `false` | Log instead of writing to the inverter |
@@ -92,6 +94,7 @@ Start with `diagnostics_only: true`. The app then logs what it *would* write wit
 ## Troubleshooting
 
 - **No sensor and nothing in the logs.** The file isn't loaded as an app. Check it's in `pyscript/apps/` and that `pyscript: apps: solis_ev_follow:` exists in `configuration.yaml`, then restart fully.
+- **A slot has the right time but the battery doesn't charge.** Check the slot is switched on in SolisCloud. Look for `Enabling charge slot N` in the log, and that `manage_slot_switches` hasn't been set to `false`.
 - **Slots are at the wrong times.** Check the inverter clock and `inverter_timezone`.
 - **Before sharing logs**, remove inverter serial numbers and your Octopus account ID.
 
@@ -117,6 +120,7 @@ CI runs the suite on every push (`.github/workflows/tests.yml`).
 - [Moondevil-ha/solis-smart-charging](https://github.com/Moondevil-ha/solis-smart-charging) (MIT): the SolisCloud API signing, login, inverter selection, time sync and control-write code is adapted from this project, which schedules battery charging from Octopus *planned* dispatches.
 - [stevegal/solis_control](https://github.com/stevegal/solis_control) (MIT): the original SolisCloud API logic used by the project above.
 - [hultenvp/solis-sensor](https://github.com/hultenvp/solis-sensor): the 6-slot charge time CID mapping.
+- [mkuthan/solis-cloud-control](https://github.com/mkuthan/solis-cloud-control): slot switch CIDs and the `yuanzhi` bitmask they require.
 
 Not affiliated with Solis, Octopus Energy, Hypervolt or Home Assistant.
 

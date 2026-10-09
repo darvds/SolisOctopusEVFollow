@@ -31,6 +31,7 @@ pyscript:
       manage_core_slot: true     # write core_window into slot 1
       core_window: "23:30-05:30"
       clear_other_slots: true    # clear slots 3-6 on startup (removes old dispatch windows)
+      manage_slot_switches: true # switch slots on when given a window, off when cleared
       inverter_timezone: Europe/London
       sync_inverter_time: true   # sync inverter clock at most once per 24h
 
